@@ -45,8 +45,8 @@ def read_names_from_xlsx(file_path):
     suffixes = ["Jr.", "Sr.", "I", "II", "III"]
 
     for index, row in df.iterrows():
-        if pd.notnull(row['Name']):
-            full_name = row['Name'].strip().split()
+        if pd.notnull(row['People::Name Full']):
+            full_name = row['People::Name Full'].strip().split()
             first_name = full_name[0]
             last_name = full_name[-1]
             # Check if the last name is in the suffixes list
@@ -56,10 +56,10 @@ def read_names_from_xlsx(file_path):
             first_name = ''
             last_name = ''
 
-        if pd.isnull(row['D.O.B.']):
+        if pd.isnull(row['People::D.O.B.']):
             dob = ''  # Assign an empty string if the D.O.B value is NaT
         else:
-            dob = row['D.O.B.'].strftime('%m/%d/%Y')
+            dob = row['People::D.O.B.'].strftime('%m/%d/%Y')
 
         name = {
             'first_name': first_name,
@@ -135,10 +135,16 @@ def get_criminal_case_records(driver, county, last_name, first_name, dob=''):
     try:
         WebDriverWait(driver, 10).until(AnyOfTheseElementsLocated(filed_div_locator, no_cases_matched_locator))
         html_content = driver.page_source
-        return html_content
+
+        if has_filed_status(html_content):
+            return html_content, True
+        else:
+            print(f"{last_name}, {first_name} has no case filed.")
+            return None, False
     except TimeoutException:
         print(f"{last_name}, {first_name} has no case file.")
-        return None
+        return None, False
+
 
 def has_filed_status(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -230,28 +236,14 @@ class App:
         # Read names from .xlsx file
         names = read_names_from_xlsx(file_path)
 
-        MAX_RETRIES = 5  # define maximum number of retries here
-
         for i, name in enumerate(names):
-            for retry in range(MAX_RETRIES):
-                try:
-                    html_content = get_criminal_case_records(driver, county, name['last_name'], name['first_name'],
-                                                             name['dob'])
+            html_content, has_filed = get_criminal_case_records(driver, county, name['last_name'], name['first_name'],
+                                                                name['dob'])
 
-                    if html_content:
-                        if has_filed_status(html_content):
-                            filed_cases.append(name)
-                        else:
-                            no_case_filed.append(name)
-
-                    # If we've reached this far, it means there were no exceptions and we can break the retry loop
-                    break
-                except Exception as e:
-                    print(
-                        f"Exception occurred: {str(e)}. Retrying for {name['last_name']}, {name['first_name']} - attempt {retry + 1}")
-
-                # Wait for 2 seconds before the next retry
-                time.sleep(2)
+            if has_filed:
+                filed_cases.append(name)
+            else:
+                no_case_filed.append(name)
 
             # Update the progress bar after each name
             self.progress['value'] = (i + 1) / len(names) * 100
