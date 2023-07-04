@@ -19,6 +19,11 @@ from tkinter import filedialog
 import threading
 import tkinter.ttk as ttk
 import sys
+import openpyxl
+import requests
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
+import re
+
 
 
 class AnyOfTheseElementsLocated:
@@ -70,23 +75,6 @@ def read_names_from_xlsx(file_path):
     return names
 
 
-def write_filed_cases_to_csv(filed_cases, file_path):
-    with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(["Last Name", "First Name", "D.O.B."])
-
-        for case in filed_cases:
-            writer.writerow([case["last_name"], case["first_name"], case["dob"]])
-
-def write_no_case_filed_to_csv(no_case_filed, file_path):
-    with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.writer(csv_file)
-        writer.writerow(["Last Name", "First Name", "D.O.B."])
-
-        for case in no_case_filed:
-            writer.writerow([case["last_name"], case["first_name"], case["dob"]])
-
-
 def search_form(driver, last_name, first_name, dob=''):
     last_name_input = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "LastName")))
     first_name_input = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "FirstName")))
@@ -105,8 +93,8 @@ def search_form(driver, last_name, first_name, dob=''):
     search_button.click()
 
 
-
-def get_criminal_case_records(driver, county, last_name, first_name, dob=''):
+def get_criminal_case_records(driver, county, last_name, first_name, dob='', names=None):
+    filed_cases = []
     search_url = {
         "Guadalupe": "https://portal-txguadalupe.tylertech.cloud/PublicAccess/default.aspx",
         "Comal": "http://public.co.comal.tx.us/default.aspx",  # Replace with the actual URL
@@ -132,17 +120,52 @@ def get_criminal_case_records(driver, county, last_name, first_name, dob=''):
     filed_div_locator = (By.XPATH, "//div[contains(text(), 'Filed')]")
     no_cases_matched_locator = (By.XPATH, "//span[contains(text(), 'No cases matched your search criteria.')]")
 
+    html_content = None  # Define html_content variable with an initial value
+
     try:
         WebDriverWait(driver, 10).until(AnyOfTheseElementsLocated(filed_div_locator, no_cases_matched_locator))
-        html_content = driver.page_source
 
-        if has_filed_status(html_content):
-            return html_content, True
-        else:
-            print(f"{last_name}, {first_name} has no case filed.")
-            return None, False
+        if has_filed_status(driver.page_source):
+            case_number_links = driver.find_elements(By.XPATH,
+                                                     '//tr[./td/div[text()="Filed"]]//a[contains(@href, "CaseDetail.aspx?CaseID=")]')
+
+            if case_number_links:
+                case_number_link = case_number_links[0]  # Get the first case link
+
+                case_id = case_number_link.get_attribute('href').split('=')[-1]
+
+                case_number_link.click()
+                # Extract the court dates using regular expressions
+                html_content = driver.page_source
+                court_dates = []
+
+                # Extract all court dates using regular expressions
+                date_pattern = r"\d{2}/\d{2}/\d{4}"
+                matches = re.findall(date_pattern, html_content)
+                if matches:
+                    court_dates = matches
+
+                # Set the court date as the last date found
+                court_date = court_dates[-1] if court_dates else None
+
+                # Add the case details to the case list
+                print(court_date)
+                filed_cases.append({
+                    'last_name': last_name,
+                    'first_name': first_name,
+                    'dob': dob,
+                    'case_id': case_id,
+                    'court_date': court_date
+                })
+
+            return filed_cases, True
+
+    except StaleElementReferenceException:
+        print("Stale element reference exception occurred. Retrying...")
+        return get_criminal_case_records(driver, county, last_name, first_name, dob, names)
+
     except TimeoutException:
-        print(f"{last_name}, {first_name} has no case file.")
+        print(f"No results found for {last_name}, {first_name}.")
         return None, False
 
 
@@ -210,6 +233,30 @@ class App:
         # Redirect stdout
         sys.stdout = TextRedirector(self.console_output)
 
+    def write_filed_cases_to_csv(self, filed_cases, file_path):
+        fieldnames = ["Last Name", "First Name", "D.O.B.", "Court Date"]
+
+        with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for case in filed_cases:
+                row = {
+                    "Last Name": case.get("last_name", ""),
+                    "First Name": case.get("first_name", ""),
+                    "D.O.B.": case.get("dob", ""),
+                    "Court Date": case.get("court_date", "")
+                }
+                writer.writerow(row)
+
+    def write_no_case_filed_to_csv(self, no_case_filed, file_path):
+        with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["Last Name", "First Name", "D.O.B."])
+
+            for case in no_case_filed:
+                writer.writerow([case["last_name"], case["first_name"], case["dob"]])
+
     def browse_file(self):
         self.file_path_var.set(filedialog.askopenfilename())
 
@@ -227,8 +274,8 @@ class App:
         county = self.county_var.get()
         file_path = self.file_path_var.get()
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
 
         filed_cases = []
         no_case_filed = []
@@ -237,8 +284,9 @@ class App:
         names = read_names_from_xlsx(file_path)
 
         for i, name in enumerate(names):
-            html_content, has_filed = get_criminal_case_records(driver, county, name['last_name'], name['first_name'],
-                                                                name['dob'])
+            html_content, has_filed = get_criminal_case_records(driver, county, name['last_name'], name['first_name'], name['dob'])
+
+
 
             if has_filed:
                 filed_cases.append(name)
@@ -250,8 +298,8 @@ class App:
             self.root.update_idletasks()
 
         # Writing the results to csv files
-        write_filed_cases_to_csv(filed_cases, self.filed_cases_path_var.get())
-        write_no_case_filed_to_csv(no_case_filed, self.no_case_filed_path_var.get())
+        self.write_filed_cases_to_csv(filed_cases, self.filed_cases_path_var.get())
+        self.write_no_case_filed_to_csv(no_case_filed, self.no_case_filed_path_var.get())
 
         print("Scraping completed. Check the csv files for the results.")
         driver.quit()
