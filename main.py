@@ -19,6 +19,8 @@ from tkinter import filedialog
 import threading
 import tkinter.ttk as ttk
 import sys
+import re
+from dateutil.parser import parse
 
 
 class AnyOfTheseElementsLocated:
@@ -73,10 +75,12 @@ def read_names_from_xlsx(file_path):
 def write_filed_cases_to_csv(filed_cases, file_path):
     with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["Last Name", "First Name", "D.O.B."])
+        writer.writerow(["Last Name", "First Name", "D.O.B.", "Court Dates"])
 
         for case in filed_cases:
-            writer.writerow([case["last_name"], case["first_name"], case["dob"]])
+            court_dates_str = ', '.join(case['court_dates'])  # Join all court dates into a single string
+            writer.writerow([case["last_name"], case["first_name"], case["dob"], court_dates_str])
+
 
 def write_no_case_filed_to_csv(no_case_filed, file_path):
     with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
@@ -106,11 +110,11 @@ def search_form(driver, last_name, first_name, dob=''):
 
 
 
-def get_criminal_case_records(driver, county, last_name, first_name, dob=''):
+def get_criminal_case_records(driver, county, last_name, first_name, filed_cases, no_case_filed, dob=''):
     search_url = {
         "Guadalupe": "https://portal-txguadalupe.tylertech.cloud/PublicAccess/default.aspx",
-        "Comal": "http://public.co.comal.tx.us/default.aspx",  # Replace with the actual URL
-        "Hays": "https://public.co.hays.tx.us/default.aspx"  # Replace with the actual URL
+        "Comal": "http://public.co.comal.tx.us/default.aspx",
+        "Hays": "https://public.co.hays.tx.us/default.aspx"
     }[county]
 
     driver.get(search_url)
@@ -126,7 +130,7 @@ def get_criminal_case_records(driver, county, last_name, first_name, dob=''):
             search_type_dropdown.select_by_visible_text("Defendant")
 
     search_form(driver, last_name, first_name, dob)
-
+    case_record = {'first_name': first_name, 'last_name': last_name, 'dob': dob, 'court_dates': []}
     print("Waiting for search results...")
 
     filed_div_locator = (By.XPATH, "//div[contains(text(), 'Filed')]")
@@ -137,14 +141,83 @@ def get_criminal_case_records(driver, county, last_name, first_name, dob=''):
         html_content = driver.page_source
 
         if has_filed_status(html_content):
-            return html_content, True
-        else:
-            print(f"{last_name}, {first_name} is not filed.")
-            return None, False
+            soup = BeautifulSoup(html_content, 'html.parser')
+            table_rows = soup.find_all('tr')
+            latest_court_dates = []
+
+            for row in table_rows:
+                if row.find('div', string='Filed'):
+                    case_number_link = row.find('a', href=True, style="color: blue")
+                    if case_number_link and "CaseDetail.aspx?" in case_number_link['href']:
+                        case_number_url = case_number_link['href']
+                        case_number = case_number_link.text
+
+                        print(f"Clicking on case number: {case_number}")
+
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.XPATH, f"//a[@href='{case_number_url}']"))).click()
+                        # Wait for page load and parse it
+                        # Locate the table with case details and get last date
+                        latest_court_date = get_latest_court_date(driver.page_source)
+                        print(f"Latest Court Date: {latest_court_date}")
+                        case_record['court_dates'].append(latest_court_date)
+                        # Go back to the search results page to find the next case
+                        driver.back()
+
+            if case_record['court_dates']:
+                # If we did, return the record and True
+                return case_record, True, None
+            else:
+                # If we didn't, print a message and return None and False
+                print(f"{last_name}, {first_name} is not filed.")
+                return None, False, None
     except TimeoutException:
         print(f"{last_name}, {first_name} is not filed.")
-        return None, False
+        return None, False, None
 
+
+def get_latest_court_date(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    court_dates = soup.find_all("th", {"class": "ssTableHeaderLabel", "valign": "top"})
+    if court_dates:
+        # Parse dates and ignore any invalid ones.
+        parsed_dates = []
+        for date in court_dates:
+            try:
+                parsed_date = parse(date.text.strip())
+                parsed_dates.append(parsed_date)
+            except ValueError:
+                continue
+
+        # If any valid dates were found, return the latest one.
+        if parsed_dates:
+            return max(parsed_dates).strftime('%m/%d/%Y')
+    return None
+
+
+def get_case_number(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    cases = soup.find_all('tr', {'bgcolor': '#EEEEEE'})
+
+    if cases:
+        print(f"Total cases found: {len(cases)}")
+    else:
+        print("No cases found in the given HTML content.")
+        return None
+
+    for idx, case in enumerate(cases, 1):
+        link = case.find('a')
+        case_status_divs = case.find_all('div')
+        case_status = case_status_divs[-1].get_text().lower() if case_status_divs else None
+        if link and case_status == "filed":
+            case_number = link.get_text()
+            print(f"Case Number {idx} Retrieved: {case_number}")
+            return case_number
+        else:
+            print(f"No filed case found for case {idx}: {case}")
+
+    print("No filed case found in all cases")
+    return None
 
 def has_filed_status(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -237,22 +310,21 @@ class App:
         names = read_names_from_xlsx(file_path)
 
         for i, name in enumerate(names):
-            html_content, has_filed = get_criminal_case_records(driver, county, name['last_name'], name['first_name'],
-                                                                name['dob'])
+            case_record, has_filed, _ = get_criminal_case_records(driver, county, name['last_name'], name['first_name'],
+                                                                  filed_cases, no_case_filed, name['dob'])
 
             if has_filed:
-                filed_cases.append(name)
+                filed_cases.append(case_record)
             else:
                 no_case_filed.append(name)
 
             # Update the progress bar after each name
-            self.progress['value'] = (i + 1) / len(names) * 100
+            self.progress['value'] = (i + 1) / len(names) * 100  # Assuming the range is 0-100
             self.root.update_idletasks()
 
-        # Writing the results to csv files
+        # Write results to CSV
         write_filed_cases_to_csv(filed_cases, self.filed_cases_path_var.get())
         write_no_case_filed_to_csv(no_case_filed, self.no_case_filed_path_var.get())
-
         print("Scraping completed. Check the csv files for the results.")
         driver.quit()
 
