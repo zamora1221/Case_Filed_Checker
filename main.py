@@ -75,20 +75,24 @@ def read_names_from_xlsx(file_path):
 def write_filed_cases_to_csv(filed_cases, file_path):
     with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["Last Name", "First Name", "D.O.B.", "Court Dates"])
+        writer.writerow(["People::Name Full", "People::D.O.B.", "Court Dates"])
 
         for case in filed_cases:
+            full_name = "{} {}".format(case["first_name"], case["last_name"])
             court_dates_str = ', '.join(case['court_dates'])  # Join all court dates into a single string
-            writer.writerow([case["last_name"], case["first_name"], case["dob"], court_dates_str])
+            writer.writerow([full_name, case["dob"], court_dates_str])
+
 
 
 def write_no_case_filed_to_csv(no_case_filed, file_path):
     with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["Last Name", "First Name", "D.O.B."])
+        writer.writerow(["People::Name Full", "People::D.O.B."])
 
         for case in no_case_filed:
-            writer.writerow([case["last_name"], case["first_name"], case["dob"]])
+            full_name = "{} {}".format(case["first_name"], case["last_name"])
+            writer.writerow([full_name, case["dob"]])
+
 
 
 def search_form(driver, last_name, first_name, dob=''):
