@@ -178,7 +178,7 @@ def get_criminal_case_records(driver, county, last_name, first_name, filed_cases
     except TimeoutException:
         print(f"{last_name}, {first_name} is not filed.")
         return None, False, None
-
+    return None, False, None
 
 def get_latest_court_date(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
