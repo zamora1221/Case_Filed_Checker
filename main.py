@@ -46,6 +46,9 @@ def read_names_from_xlsx(file_path):
     names = []
     suffixes = ["Jr.", "Sr.", "I", "II", "III"]
 
+    # Convert 'People::D.O.B.' column to datetime format
+    df['People::D.O.B.'] = pd.to_datetime(df['People::D.O.B.'], errors='coerce')
+
     for index, row in df.iterrows():
         if pd.notnull(row['People::Name Full']):
             full_name = row['People::Name Full'].strip().split()
@@ -122,14 +125,21 @@ def get_criminal_case_records(driver, county, last_name, first_name, filed_cases
     }[county]
 
     driver.get(search_url)
+    time.sleep(2)
 
     if county in ["Guadalupe", "Comal", "Hays"]:
         print("Looking for the Criminal Case Records link...")
-        criminal_case_records_link = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.LINK_TEXT, "Criminal Case Records")))
-        criminal_case_records_link.click()
+        for _ in range(3):  # Try up to 3 times
+            try:
+                criminal_case_records_link = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.LINK_TEXT, "Criminal Case Records")))
+                criminal_case_records_link.click()
+                break  # Break the loop if we succeed
+            except TimeoutException:
+                print("Timed out waiting for 'Criminal Case Records' link, retrying...")
         # Select "Defendant" from the drop-down menu
         if county == "Guadalupe":
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "SearchBy")))
             search_type_dropdown = Select(driver.find_element(By.ID, "SearchBy"))
             search_type_dropdown.select_by_visible_text("Defendant")
 
@@ -167,6 +177,7 @@ def get_criminal_case_records(driver, county, last_name, first_name, filed_cases
                         case_record['court_dates'].append(latest_court_date)
                         # Go back to the search results page to find the next case
                         driver.back()
+                        time.sleep(2)
 
             if case_record['court_dates']:
                 # If we did, return the record and True
@@ -174,6 +185,7 @@ def get_criminal_case_records(driver, county, last_name, first_name, filed_cases
             else:
                 # If we didn't, print a message and return None and False
                 print(f"{last_name}, {first_name} is not filed.")
+                time.sleep(2)
                 return None, False, None
     except TimeoutException:
         print(f"{last_name}, {first_name} is not filed.")
