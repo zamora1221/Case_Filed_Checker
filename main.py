@@ -21,9 +21,11 @@ import tkinter.ttk as ttk
 import sys
 import re
 from dateutil.parser import parse
+from datetime import datetime
 
 
 class AnyOfTheseElementsLocated:
+    """Custom expected condition to wait for any of the given locators."""
     def __init__(self, *locators):
         self.locators = locators
 
@@ -52,17 +54,25 @@ def read_names_from_xlsx(file_path):
     for index, row in df.iterrows():
         if pd.notnull(row['People::Name Full']):
             full_name = row['People::Name Full'].strip().split()
+
             first_name = full_name[0]
-            last_name = full_name[-1]
-            # Check if the last name is in the suffixes list
-            if last_name in suffixes and len(full_name) > 2:
-                last_name = full_name[-2]
+
+            if len(full_name) == 2:  # Just first and last name
+                last_name = full_name[-1]
+            elif len(full_name) == 3 and len(full_name[1]) == 1:  # Middle initial present
+                last_name = full_name[-1]
+            else:  # Handle cases with two last names
+                if len(full_name) > 1 and full_name[-2] in suffixes:
+                    last_name = " ".join(full_name[-3:-1])
+                else:
+                    last_name = " ".join(full_name[-3:])
+
         else:
             first_name = ''
             last_name = ''
 
         if pd.isnull(row['People::D.O.B.']):
-            dob = ''  # Assign an empty string if the D.O.B value is NaT
+            dob = ''
         else:
             dob = row['People::D.O.B.'].strftime('%m/%d/%Y')
 
@@ -78,12 +88,12 @@ def read_names_from_xlsx(file_path):
 def write_filed_cases_to_csv(filed_cases, file_path):
     with open(file_path, mode="w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["People::Name Full", "People::D.O.B.", "Court Dates"])
+        writer.writerow(["People::Name Full", "People::D.O.B.", "Case Number", "Court Dates"])
 
         for case in filed_cases:
             full_name = "{} {}".format(case["first_name"], case["last_name"])
             court_dates_str = ', '.join(case['court_dates'])  # Join all court dates into a single string
-            writer.writerow([full_name, case["dob"], court_dates_str])
+            writer.writerow([full_name, case["dob"], case["case_number"], court_dates_str])
 
 
 
@@ -116,35 +126,44 @@ def search_form(driver, last_name, first_name, dob=''):
     search_button.click()
 
 
-
 def get_criminal_case_records(driver, county, last_name, first_name, filed_cases, no_case_filed, dob=''):
     search_url = {
         "Guadalupe": "https://portal-txguadalupe.tylertech.cloud/PublicAccess/default.aspx",
         "Comal": "http://public.co.comal.tx.us/default.aspx",
-        "Hays": "https://public.co.hays.tx.us/default.aspx"
+        "Hays": "https://public.co.hays.tx.us/default.aspx",
+        "Williamson": "https://judicialrecords.wilco.org/PublicAccess/default.aspx"  # Added Williamson County
     }[county]
 
     driver.get(search_url)
     time.sleep(2)
 
-    if county in ["Guadalupe", "Comal", "Hays"]:
+    # Use the same logic for Williamson as Hays
+    if county in ["Guadalupe", "Comal", "Hays", "Williamson"]:  # Include Williamson here
         print("Looking for the Criminal Case Records link...")
-        for _ in range(3):  # Try up to 3 times
+        for _ in range(5):
             try:
                 criminal_case_records_link = WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.LINK_TEXT, "Criminal Case Records")))
                 criminal_case_records_link.click()
-                break  # Break the loop if we succeed
+                break
             except TimeoutException:
                 print("Timed out waiting for 'Criminal Case Records' link, retrying...")
-        # Select "Defendant" from the drop-down menu
+                driver.refresh()
+
+        # Specific code for Guadalupe
         if county == "Guadalupe":
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "SearchBy")))
+            for _ in range(5):  # Try up to 3 times
+                try:
+                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "SearchBy")))
+                    break  # Break the loop if we succeed
+                except TimeoutException:
+                    print("Timed out waiting for element with ID 'SearchBy', refreshing...")
+                    driver.refresh()
             search_type_dropdown = Select(driver.find_element(By.ID, "SearchBy"))
             search_type_dropdown.select_by_visible_text("Defendant")
 
     search_form(driver, last_name, first_name, dob)
-    case_record = {'first_name': first_name, 'last_name': last_name, 'dob': dob, 'court_dates': []}
+    case_record = {'first_name': first_name, 'last_name': last_name, 'dob': dob, 'court_dates': [], 'case_number': ''}
     print("Waiting for search results...")
 
     filed_div_locator = (By.XPATH, "//div[contains(text(), 'Filed')]")
@@ -165,7 +184,7 @@ def get_criminal_case_records(driver, county, last_name, first_name, filed_cases
                     if case_number_link and "CaseDetail.aspx?" in case_number_link['href']:
                         case_number_url = case_number_link['href']
                         case_number = case_number_link.text
-
+                        case_record['case_number'] = case_number
                         print(f"Clicking on case number: {case_number}")
 
                         WebDriverWait(driver, 10).until(
@@ -245,6 +264,7 @@ def has_filed_status(html_content):
     return filed_div is not None
 
 class TextRedirector(object):
+    """Redirects console output to tkinter Text widget."""
     def __init__(self, widget):
         self.widget = widget
 
@@ -268,7 +288,7 @@ class App:
         self.county_label = tk.Label(root, text="County:")
         self.county_label.grid(row=1, column=0, padx=5, pady=5)
 
-        self.county_combobox = ttk.Combobox(root, textvariable=self.county_var, values=["Guadalupe", "Comal", "Hays"])
+        self.county_combobox = ttk.Combobox(root, textvariable=self.county_var, values=["Guadalupe", "Comal", "Hays", "Williamson"])
         self.county_combobox.grid(row=1, column=1, padx=5, pady=5)
 
         self.file_path_label = tk.Label(root, text="File path:")
